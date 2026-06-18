@@ -9,14 +9,13 @@ import streamlit as st
 
 
 # ============================================================
-# MODEL (leichter + stabil)
+# MODEL (EXAKT wie Training → wichtig!)
 # ============================================================
 
 class EVA02AircraftClassifier(nn.Module):
     def __init__(self, model_name, num_classes, image_size):
         super().__init__()
 
-        # 🔥 weniger RAM: nur backbone ohne extra features
         self.backbone = timm.create_model(
             model_name,
             pretrained=False,
@@ -30,7 +29,12 @@ class EVA02AircraftClassifier(nn.Module):
 
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
-            nn.Linear(feat_dim, num_classes),
+            nn.Dropout(0.3),
+            nn.Linear(feat_dim, 512),
+            nn.GELU(),
+            nn.LayerNorm(512),
+            nn.Dropout(0.15),
+            nn.Linear(512, num_classes),
         )
 
     def forward(self, x):
@@ -48,11 +52,10 @@ st.set_page_config(
 )
 
 st.title("✈️ Aircraft Identifier")
-st.write("Upload a plane image for classification.")
 
 
 # ============================================================
-# LOAD MODEL (RAM OPTIMIERT)
+# LOAD MODEL (stabil + cached)
 # ============================================================
 
 @st.cache_resource(show_spinner=True)
@@ -68,8 +71,7 @@ def load_model():
         filename="aircraft_knowledge_base.json",
     )
 
-    # 🔥 CPU ONLY (wichtig für Streamlit Cloud)
-    device = torch.device("cpu")
+    device = torch.device("cpu")  # 🔥 wichtig für Streamlit Cloud
 
     ckpt = torch.load(model_path, map_location=device)
 
@@ -86,21 +88,18 @@ def load_model():
     with open(kb_path, "r") as f:
         kb = json.load(f)["variants"]
 
-    class_names = ckpt["class_names"]
-    image_size = 224  # 🔥 FIX: klein halten
-
-    return model, kb, class_names, image_size, device
+    return model, kb, ckpt["class_names"], ckpt["image_size"], device
 
 
 MODEL, KB, CLASS_NAMES, IMAGE_SIZE, DEVICE = load_model()
 
 
 # ============================================================
-# IMAGE TRANSFORM (leicht)
+# TRANSFORM
 # ============================================================
 
 TRANSFORM = transforms.Compose([
-    transforms.Resize((224, 224)),  # 🔥 FIX
+    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(
         [0.485, 0.456, 0.406],
@@ -121,8 +120,8 @@ def lookup_specs(name):
 
 
 @torch.no_grad()
-def predict(img):
-    x = TRANSFORM(img).unsqueeze(0).to(DEVICE)
+def predict(image):
+    x = TRANSFORM(image).unsqueeze(0).to(DEVICE)
 
     logits = MODEL(x)
     probs = torch.softmax(logits, dim=1)
@@ -144,7 +143,7 @@ if uploaded:
     image = Image.open(uploaded).convert("RGB")
     st.image(image, caption="Uploaded image", use_container_width=True)
 
-    with st.spinner("Predicting..."):
+    with st.spinner("Analyzing..."):
         top_probs, top_idx = predict(image)
 
     best = CLASS_NAMES[top_idx[0][0].item()]
@@ -153,16 +152,15 @@ if uploaded:
     st.success(f"Prediction: {best}")
     st.metric("Confidence", f"{conf:.2f}%")
 
-    st.subheader("Top 5")
+    st.subheader("Top 5 predictions")
 
     for i in range(5):
         label = CLASS_NAMES[top_idx[0][i].item()]
         score = top_probs[0][i].item() * 100
-
         st.write(f"{i+1}. {label} — {score:.2f}%")
 
     specs = lookup_specs(best)
 
     if specs:
-        st.subheader("Aircraft Info")
+        st.subheader("Aircraft info")
         st.json(specs)
