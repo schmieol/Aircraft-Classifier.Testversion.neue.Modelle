@@ -9,18 +9,18 @@ import streamlit as st
 
 
 # ============================================================
-# MODEL
+# MODEL (leichter + stabil)
 # ============================================================
 
 class EVA02AircraftClassifier(nn.Module):
     def __init__(self, model_name, num_classes, image_size):
         super().__init__()
 
+        # 🔥 weniger RAM: nur backbone ohne extra features
         self.backbone = timm.create_model(
             model_name,
             pretrained=False,
             num_classes=0,
-            drop_rate=0.0,
         )
 
         with torch.no_grad():
@@ -30,12 +30,7 @@ class EVA02AircraftClassifier(nn.Module):
 
         self.head = nn.Sequential(
             nn.LayerNorm(feat_dim),
-            nn.Dropout(0.3),
-            nn.Linear(feat_dim, 512),
-            nn.GELU(),
-            nn.LayerNorm(512),
-            nn.Dropout(0.15),
-            nn.Linear(512, num_classes),
+            nn.Linear(feat_dim, num_classes),
         )
 
     def forward(self, x):
@@ -53,14 +48,14 @@ st.set_page_config(
 )
 
 st.title("✈️ Aircraft Identifier")
-st.write("Upload a photo of an aircraft. The AI model predicts the aircraft variant.")
+st.write("Upload a plane image for classification.")
 
 
 # ============================================================
-# LOAD MODEL
+# LOAD MODEL (RAM OPTIMIERT)
 # ============================================================
 
-@st.cache_resource
+@st.cache_resource(show_spinner=True)
 def load_model():
 
     model_path = hf_hub_download(
@@ -73,13 +68,10 @@ def load_model():
         filename="aircraft_knowledge_base.json",
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 🔥 CPU ONLY (wichtig für Streamlit Cloud)
+    device = torch.device("cpu")
 
-    ckpt = torch.load(
-        model_path,
-        map_location=device,
-        weights_only=False,
-    )
+    ckpt = torch.load(model_path, map_location=device)
 
     model = EVA02AircraftClassifier(
         ckpt["model_name"],
@@ -94,18 +86,21 @@ def load_model():
     with open(kb_path, "r") as f:
         kb = json.load(f)["variants"]
 
-    return model, kb, ckpt["class_names"], ckpt["image_size"], device
+    class_names = ckpt["class_names"]
+    image_size = 224  # 🔥 FIX: klein halten
+
+    return model, kb, class_names, image_size, device
 
 
 MODEL, KB, CLASS_NAMES, IMAGE_SIZE, DEVICE = load_model()
 
 
 # ============================================================
-# TRANSFORM
+# IMAGE TRANSFORM (leicht)
 # ============================================================
 
 TRANSFORM = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    transforms.Resize((224, 224)),  # 🔥 FIX
     transforms.ToTensor(),
     transforms.Normalize(
         [0.485, 0.456, 0.406],
@@ -126,13 +121,13 @@ def lookup_specs(name):
 
 
 @torch.no_grad()
-def classify_pil_image(img):
-    tensor = TRANSFORM(img).unsqueeze(0).to(DEVICE)
+def predict(img):
+    x = TRANSFORM(img).unsqueeze(0).to(DEVICE)
 
-    probs = torch.softmax(MODEL(tensor), dim=1)
-    top_probs, top_idx = probs.topk(5)
+    logits = MODEL(x)
+    probs = torch.softmax(logits, dim=1)
 
-    return top_probs, top_idx
+    return probs.topk(5)
 
 
 # ============================================================
@@ -145,30 +140,29 @@ uploaded = st.file_uploader(
 )
 
 if uploaded:
-    image = Image.open(uploaded).convert("RGB")
 
+    image = Image.open(uploaded).convert("RGB")
     st.image(image, caption="Uploaded image", use_container_width=True)
 
-    with st.spinner("Analyzing aircraft..."):
-        top_probs, top_idx = classify_pil_image(image)
+    with st.spinner("Predicting..."):
+        top_probs, top_idx = predict(image)
 
-    best_variant = CLASS_NAMES[top_idx[0][0].item()]
-    confidence = top_probs[0][0].item() * 100
+    best = CLASS_NAMES[top_idx[0][0].item()]
+    conf = top_probs[0][0].item() * 100
 
-    st.success(f"Prediction: {best_variant}")
-    st.metric("Confidence", f"{confidence:.2f}%")
+    st.success(f"Prediction: {best}")
+    st.metric("Confidence", f"{conf:.2f}%")
 
-    st.subheader("Top 5 Predictions")
+    st.subheader("Top 5")
 
     for i in range(5):
-        variant = CLASS_NAMES[top_idx[0][i].item()]
+        label = CLASS_NAMES[top_idx[0][i].item()]
         score = top_probs[0][i].item() * 100
 
-        st.progress(min(score / 100, 1.0))
-        st.write(f"{i+1}. {variant} — {score:.2f}%")
+        st.write(f"{i+1}. {label} — {score:.2f}%")
 
-    specs = lookup_specs(best_variant)
+    specs = lookup_specs(best)
 
     if specs:
-        st.subheader("Aircraft Information")
+        st.subheader("Aircraft Info")
         st.json(specs)
