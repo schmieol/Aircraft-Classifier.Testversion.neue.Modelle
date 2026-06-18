@@ -4,4 +4,3 @@ torchvision
 timm
 huggingface_hub
 Pillow
-safetensors
