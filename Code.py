@@ -1,15 +1,24 @@
+import os
 import json
 import torch
 import torch.nn as nn
 import timm
 from PIL import Image
 from torchvision import transforms
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, login
 import streamlit as st
 
 
 # ============================================================
-# MODEL (EXAKT wie Training → wichtig!)
+# OPTIONAL HF LOGIN (sauber)
+# ============================================================
+
+if os.getenv("HF_TOKEN"):
+    login(token=os.getenv("HF_TOKEN"))
+
+
+# ============================================================
+# MODEL (EXAKT wie Training → KEINE Änderungen!)
 # ============================================================
 
 class EVA02AircraftClassifier(nn.Module):
@@ -52,10 +61,11 @@ st.set_page_config(
 )
 
 st.title("✈️ Aircraft Identifier")
+st.write("Upload an aircraft image for classification.")
 
 
 # ============================================================
-# LOAD MODEL (stabil + cached)
+# LOAD MODEL (RAM SAFE)
 # ============================================================
 
 @st.cache_resource(show_spinner=True)
@@ -95,11 +105,11 @@ MODEL, KB, CLASS_NAMES, IMAGE_SIZE, DEVICE = load_model()
 
 
 # ============================================================
-# TRANSFORM
+# IMAGE TRANSFORM
 # ============================================================
 
 TRANSFORM = transforms.Compose([
-    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    transforms.Resize((224, 224)),  # 🔥 fix für RAM + Stabilität
     transforms.ToTensor(),
     transforms.Normalize(
         [0.485, 0.456, 0.406],
@@ -120,8 +130,8 @@ def lookup_specs(name):
 
 
 @torch.no_grad()
-def predict(image):
-    x = TRANSFORM(image).unsqueeze(0).to(DEVICE)
+def predict(img):
+    x = TRANSFORM(img).unsqueeze(0).to(DEVICE)
 
     logits = MODEL(x)
     probs = torch.softmax(logits, dim=1)
@@ -141,9 +151,10 @@ uploaded = st.file_uploader(
 if uploaded:
 
     image = Image.open(uploaded).convert("RGB")
-    st.image(image, caption="Uploaded image", use_container_width=True)
 
-    with st.spinner("Analyzing..."):
+    st.image(image, caption="Uploaded image", width="stretch")
+
+    with st.spinner("Analyzing aircraft..."):
         top_probs, top_idx = predict(image)
 
     best = CLASS_NAMES[top_idx[0][0].item()]
@@ -152,7 +163,7 @@ if uploaded:
     st.success(f"Prediction: {best}")
     st.metric("Confidence", f"{conf:.2f}%")
 
-    st.subheader("Top 5 predictions")
+    st.subheader("Top 5 Predictions")
 
     for i in range(5):
         label = CLASS_NAMES[top_idx[0][i].item()]
@@ -162,5 +173,5 @@ if uploaded:
     specs = lookup_specs(best)
 
     if specs:
-        st.subheader("Aircraft info")
+        st.subheader("Aircraft Information")
         st.json(specs)
