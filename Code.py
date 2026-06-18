@@ -10,7 +10,7 @@ import streamlit as st
 
 
 # ============================================================
-# OPTIONAL HF LOGIN (sauber)
+# OPTIONAL: HF LOGIN
 # ============================================================
 
 if os.getenv("HF_TOKEN"):
@@ -18,7 +18,7 @@ if os.getenv("HF_TOKEN"):
 
 
 # ============================================================
-# MODEL (EXAKT wie Training → KEINE Änderungen!)
+# MODEL (EXAKT wie Training)
 # ============================================================
 
 class EVA02AircraftClassifier(nn.Module):
@@ -65,7 +65,7 @@ st.write("Upload an aircraft image for classification.")
 
 
 # ============================================================
-# LOAD MODEL (RAM SAFE)
+# LOAD MODEL (SAFE + CACHED)
 # ============================================================
 
 @st.cache_resource(show_spinner=True)
@@ -81,14 +81,16 @@ def load_model():
         filename="aircraft_knowledge_base.json",
     )
 
-    device = torch.device("cpu")  # 🔥 wichtig für Streamlit Cloud
+    device = torch.device("cpu")  # 🔥 Streamlit safe
 
     ckpt = torch.load(model_path, map_location=device)
+
+    image_size = ckpt["image_size"]  # 🔥 WICHTIG
 
     model = EVA02AircraftClassifier(
         ckpt["model_name"],
         ckpt["num_classes"],
-        ckpt["image_size"],
+        image_size,
     )
 
     model.load_state_dict(ckpt["model_state_dict"])
@@ -98,18 +100,18 @@ def load_model():
     with open(kb_path, "r") as f:
         kb = json.load(f)["variants"]
 
-    return model, kb, ckpt["class_names"], ckpt["image_size"], device
+    return model, kb, ckpt["class_names"], image_size, device
 
 
 MODEL, KB, CLASS_NAMES, IMAGE_SIZE, DEVICE = load_model()
 
 
 # ============================================================
-# IMAGE TRANSFORM
+# TRANSFORM (CRITICAL FIX)
 # ============================================================
 
 TRANSFORM = transforms.Compose([
-    transforms.Resize((224, 224)),  # 🔥 fix für RAM + Stabilität
+    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # 🔥 FIXED
     transforms.ToTensor(),
     transforms.Normalize(
         [0.485, 0.456, 0.406],
@@ -129,9 +131,13 @@ def lookup_specs(name):
     return None
 
 
+# ============================================================
+# INFERENCE
+# ============================================================
+
 @torch.no_grad()
-def predict(img):
-    x = TRANSFORM(img).unsqueeze(0).to(DEVICE)
+def predict(image):
+    x = TRANSFORM(image).unsqueeze(0).to(DEVICE)
 
     logits = MODEL(x)
     probs = torch.softmax(logits, dim=1)
