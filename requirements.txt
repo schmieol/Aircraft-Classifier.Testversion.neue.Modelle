@@ -1,6 +1,7 @@
+streamlit
 torch
 torchvision
 timm
-gradio
 huggingface_hub
 Pillow
+safetensors
